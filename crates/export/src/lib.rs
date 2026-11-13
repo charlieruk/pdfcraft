@@ -39,7 +39,7 @@ pub use as_rtf::rtf;
 pub use clip::{ClipBuilder, ClipSpan, ClipStyle, ClipText, MAX_CLIP_HTML_BYTES, MAX_CLIP_SPANS, MAX_CLIP_TEXT_BYTES, clip_html, font_family};
 #[cfg(test)]
 use flow::list_item;
-pub use layout::{Block, Cell, Image, Page, Table};
+pub use layout::{Block, Cell, Drawing, Image, Page, Table, TextRun};
 #[cfg(test)]
 use layout::{LOOKUP_STEPS, MAX_COLS, body_size};
 pub(crate) use layout::{Run, flowing_paragraphs, reading_order, tables};

@@ -243,6 +243,25 @@ impl crate::Document {
         image_budget: usize,
         image_work: &mut pdfcraft_cos::ImageBudget,
     ) -> (Vec<pdfcraft_export::Page>, Vec<usize>) {
+        self.export_pages_with(images, image_budget, image_work, false)
+    }
+
+    /// [`Self::export_pages_checked`] with pictures, and with each page's text runs and drawings
+    /// ([`pdfcraft_export::Page::runs`], [`pdfcraft_export::Page::drawings`]) too, for an export
+    /// that looks at how a page is set: its subscripts, the paths a figure is drawn with (#7196).
+    pub fn export_pages_detailed(&self) -> (Vec<pdfcraft_export::Page>, Vec<usize>) {
+        let Some(editor) = self.editor.as_ref() else { return (Vec::new(), Vec::new()) };
+        self.export_pages_with(true, MAX_EXPORT_IMAGE_BYTES, &mut pdfcraft_cos::ImageBudget::new(&editor.cos), true)
+    }
+
+    /// [`Self::export_pages_within`], and with `detail` the runs and drawings as well.
+    fn export_pages_with(
+        &self,
+        images: bool,
+        image_budget: usize,
+        image_work: &mut pdfcraft_cos::ImageBudget,
+        detail: bool,
+    ) -> (Vec<pdfcraft_export::Page>, Vec<usize>) {
         let Some(cos) = self.editor.as_ref().map(|e| &e.cos) else { return (Vec::new(), Vec::new()) };
         let mut truncated = Vec::new();
         // Each image object is encoded once and shared by every place that draws it.
@@ -264,11 +283,21 @@ impl crate::Document {
                 let unit = display_unit(info);
                 let reading = pdfcraft_edit::reading_blocks_checked(cos, i).unwrap_or_default();
                 let forms_unread = reading.truncated;
+                // For each line, the exported paragraph it is part of (paragraphs without text
+                // are left out, so the indexes shift).
+                let mut block_of_line = vec![None; if detail { reading.lines.len() } else { 0 }];
+                let mut exported = 0usize;
                 let blocks = reading
                     .blocks
                     .into_iter()
                     .filter(|b| !b.text.trim().is_empty())
                     .map(|b| {
+                        for &l in &b.lines {
+                            if let Some(slot) = block_of_line.get_mut(l) {
+                                *slot = Some(exported);
+                            }
+                        }
+                        exported += 1;
                         let (bold, italic) = weight_and_slant(&b.base_font);
                         // `text` is trimmed; the editor text keeps the source's own spaces.
                         let space_around = [b.editor_text.starts_with(char::is_whitespace), b.editor_text.ends_with(char::is_whitespace)];
@@ -284,6 +313,35 @@ impl crate::Document {
                         }
                     })
                     .collect();
+                let runs = if detail {
+                    let view_point = |[x, y]: [f64; 2]| {
+                        let a = info.user_to_view(x as f32, y as f32);
+                        [f64::from(a[0]), f64::from(info.height - a[1])]
+                    };
+                    reading
+                        .lines
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, l)| !l.text.trim().is_empty())
+                        .map(|(k, l)| {
+                            let (bold, italic) = weight_and_slant(&l.base_font);
+                            pdfcraft_export::TextRun {
+                                text: l.text.clone(),
+                                rect: visible_rect(l.rect),
+                                words: l.ink.iter().copied().map(visible_rect).collect(),
+                                baseline: view_point(l.baseline_start()),
+                                size: l.size * unit,
+                                bold,
+                                italic,
+                                color: l.color,
+                                rotation: l.rotation() - f64::from(info.rotation),
+                                block: block_of_line.get(k).copied().flatten(),
+                            }
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let placed = if images { pdfcraft_edit::reading_images(cos, i).unwrap_or_default() } else { Vec::new() };
                 let mut over_budget = false;
                 let images = placed
@@ -315,7 +373,13 @@ impl crate::Document {
                 let background = pdfcraft_edit::page_background(cos, i).ok().flatten();
                 // The ruled lines tell a drawn table from text that merely lines up (#5149).
                 let rules = pdfcraft_edit::page_rules(cos, i).unwrap_or_default().into_iter().map(visible_rect).collect();
-                pdfcraft_export::Page { width: info.width as f64, height: info.height as f64, blocks, images, background, rules }
+                let drawings = if detail {
+                    let drawings = pdfcraft_edit::page_drawings(cos, i).unwrap_or_default().into_iter();
+                    drawings.map(|d| pdfcraft_export::Drawing { rect: visible_rect(d.rect), stroked: d.stroked, filled: d.filled }).collect()
+                } else {
+                    Vec::new()
+                };
+                pdfcraft_export::Page { width: info.width as f64, height: info.height as f64, blocks, images, background, rules, runs, drawings }
             })
             .collect();
         (pages, truncated)

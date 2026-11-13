@@ -7830,6 +7830,46 @@ fn exporting_office_files_keeps_images() {
     assert!(String::from_utf8(d.export_office(compare::OfficeFormat::Html)).unwrap().contains("data:image/png;base64,"));
 }
 
+/// #7196: a detailed export also lists each page's text runs, each pointing at its exported
+/// paragraph, and the paths it paints, on the displayed page (y up, inside the crop box).
+#[test]
+fn a_detailed_export_lists_text_runs_and_drawings_on_the_displayed_page() {
+    let content = "BT /F1 10 Tf 172 700 Td (E = mc) Tj 4 Ts /F1 6 Tf (2) Tj ET\n\
+                   BT 0 Ts /F1 10 Tf 172 650 Td (Body text) Tj ET\n\
+                   150 300 m 160 340 190 280 200 300 c S 150 200 40 20 re f";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /CropBox [100 100 600 800] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
+            .to_string(),
+        format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    let mut s = Session::new();
+    let id = s.open("runs.pdf", None, Arc::new(pdf_of(&objs)), None).unwrap();
+    let d = s.get(id).unwrap();
+
+    let plain = &d.export_pages()[0];
+    assert!(plain.runs.is_empty() && plain.drawings.is_empty(), "other exports don't pay for them");
+
+    let (pages, truncated) = d.export_pages_detailed();
+    assert!(truncated.is_empty());
+    let page = &pages[0];
+    assert_eq!(plain.blocks, page.blocks, "the paragraphs are the same");
+    let runs: Vec<_> = page.runs.iter().map(|r| (r.text.as_str(), r.size, r.baseline[1], r.block)).collect();
+    let block = |text: &str| page.blocks.iter().position(|b| b.text == text);
+    assert_eq!(runs, [("E = mc", 10.0, 600.0, block("E = mc")), ("2", 6.0, 604.0, block("2")), ("Body text", 10.0, 550.0, block("Body text"))]);
+    assert_eq!(page.runs[0].baseline[0], 72.0, "x from the crop box's left edge");
+    assert!(page.runs[2].words.len() == 2 && page.runs[2].words[0][0] == 72.0, "{:?}", page.runs[2].words);
+    assert_eq!(
+        page.drawings,
+        [
+            pdfcraft_export::Drawing { rect: [50.0, 180.0, 100.0, 240.0], stroked: true, filled: false },
+            pdfcraft_export::Drawing { rect: [50.0, 100.0, 90.0, 120.0], stroked: false, filled: true },
+        ]
+    );
+}
+
 /// #314: a page whose content is drawn through a form XObject exports its text (the file from
 /// the report: no xref table, wrong stream lengths).
 #[test]
