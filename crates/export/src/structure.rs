@@ -2,10 +2,14 @@
 //! the running headers and footers that repeat in their margins, and the runs set as subscripts
 //! or superscripts. It only reads [`Page`]s.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::layout::{INLINE_GAP, overhang};
 use crate::{Page, TextRun};
+
+mod figures;
+
+pub use figures::{Caption, CaptionKind, Figure};
 
 /// Where a run sits on its line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26,6 +30,10 @@ pub struct PageStructure {
     pub running: Vec<bool>,
     /// Per run of [`Page::runs`]: where it sits on its line.
     pub scripts: Vec<Script>,
+    /// The page's figure and table captions, in block order.
+    pub captions: Vec<Caption>,
+    /// The page's figures, in the order of their captions.
+    pub figures: Vec<Figure>,
 }
 
 /// The structure of each page of `pages`, in order.
@@ -37,12 +45,27 @@ pub struct PageStructure {
 /// and a "Table 5" are different text. A caption ("Figure 2", "Table 3 (continued)") is never
 /// one.
 ///
+/// A caption is a paragraph that starts with "Figure", "Fig." or "Table" and a number ("3",
+/// "2-1", "A.4", "3b"), followed by nothing, punctuation, or text that does not start in
+/// lowercase, so "Figure 3 shows" is not one. A figure caption names the drawings, pictures and
+/// short labels grouped closest to it, above or below it and overlapping it across; the paths
+/// of a table's grid, and a background or frame covering half the page, are not part of a figure.
+///
 /// A run is a subscript or superscript when it is upright and short, and a run it follows or
 /// precedes on its line, at most four runs away in content order, sits on a baseline below or
 /// above its own and is set in a size at least a tenth larger (but not as much larger as a drop
 /// cap).
 pub fn structure(pages: &[Page]) -> Vec<PageStructure> {
-    running_blocks(pages).into_iter().zip(pages).map(|(running, p)| PageStructure { running, scripts: scripts(&p.runs) }).collect()
+    let mut seen = HashSet::new();
+    running_blocks(pages)
+        .into_iter()
+        .zip(pages)
+        .map(|(running, p)| {
+            let captions = figures::captions(p, &running, &mut seen);
+            let figures = figures::figures(p, &captions, &running);
+            PageStructure { scripts: scripts(&p.runs), running, captions, figures }
+        })
+        .collect()
 }
 
 /// A running header or footer lies within this fraction of the page's height from its top or
@@ -81,7 +104,7 @@ fn running_blocks(pages: &[Page]) -> Vec<Vec<bool>> {
         let band = p.height * MARGIN_BAND;
         for (bi, b) in p.blocks.iter().enumerate() {
             let top = b.rect[1] >= p.height - band;
-            if !(b.rotation.abs() <= 0.1 && (top || b.rect[3] <= band)) || is_caption(&b.text) {
+            if !(b.rotation.abs() <= 0.1 && (top || b.rect[3] <= band)) || figures::caption_label(&b.text).is_some() {
                 continue;
             }
             if let Some((text, numbers)) = template(&b.text) {
@@ -120,15 +143,6 @@ fn follows_pages(a: &[u64], pa: usize, b: &[u64], pb: usize) -> bool {
             let (first, last) = if pa < pb { (x, y) } else { (y, x) };
             x == y || last.checked_sub(first) == Some(step)
         })
-}
-
-/// A caption's label: "Figure", "Fig." or "Table" and a number, as the text starts.
-fn is_caption(text: &str) -> bool {
-    let text = text.trim_start();
-    ["figure", "fig.", "table"].iter().any(|label| {
-        text.get(..label.len()).is_some_and(|head| head.eq_ignore_ascii_case(label))
-            && text.get(label.len()..).is_some_and(|rest| rest.trim_start().starts_with(|c: char| c.is_ascii_digit()))
-    })
 }
 
 /// `text` with its spaces collapsed and each number replaced by `#`, and those numbers; `None`
