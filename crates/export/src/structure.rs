@@ -8,8 +8,10 @@ use crate::layout::{INLINE_GAP, overhang};
 use crate::{Page, TextRun};
 
 mod figures;
+mod tables;
 
 pub use figures::{Caption, CaptionKind, Figure};
+pub use tables::TableStructure;
 
 /// Where a run sits on its line.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -34,6 +36,8 @@ pub struct PageStructure {
     pub captions: Vec<Caption>,
     /// The page's figures, in the order of their captions.
     pub figures: Vec<Figure>,
+    /// The page's tables, as the other exports detect them, top to bottom.
+    pub tables: Vec<TableStructure>,
 }
 
 /// The structure of each page of `pages`, in order.
@@ -51,21 +55,52 @@ pub struct PageStructure {
 /// short labels grouped closest to it, above or below it and overlapping it across; the paths
 /// of a table's grid, and a background or frame covering half the page, are not part of a figure.
 ///
+/// A table's header is its first rows set all in bold (while a row after them is not), or else a
+/// first row with a cell over some of the columns and the row of sub-columns under it. Below
+/// the header of a table with no rules between its rows, an empty cell is spanned by the cell
+/// above it when the cells before it on its row are spanned too and a cell after it has text.
+/// A table caption names the table nearest it, under it first. A table's notes are the blocks
+/// right under it that start with a note mark ("Note 1:", "(2)", "*"). A table continues the last
+/// table of the page before when their columns line up and its caption continues that table's,
+/// or its first rows repeat that table's header, or it has no caption and nothing but running
+/// headers and footers lies between the two.
+///
 /// A run is a subscript or superscript when it is upright and short, and a run it follows or
 /// precedes on its line, at most four runs away in content order, sits on a baseline below or
 /// above its own and is set in a size at least a tenth larger (but not as much larger as a drop
 /// cap).
 pub fn structure(pages: &[Page]) -> Vec<PageStructure> {
     let mut seen = HashSet::new();
-    running_blocks(pages)
+    let mut ends = Vec::with_capacity(pages.len());
+    let mut out: Vec<PageStructure> = running_blocks(pages)
         .into_iter()
         .zip(pages)
         .map(|(running, p)| {
             let captions = figures::captions(p, &running, &mut seen);
-            let figures = figures::figures(p, &captions, &running);
-            PageStructure { scripts: scripts(&p.runs), running, captions, figures }
+            let (found, consumed) = crate::tables(&p.blocks, &p.rules);
+            let figures = figures::figures(p, &captions, &running, &found, &consumed);
+            let tables = tables::page_tables(p, found, &captions, &running, &consumed);
+            ends.push(tables::page_ends(p, &tables, &running, &consumed));
+            PageStructure { scripts: scripts(&p.runs), running, captions, figures, tables }
         })
-        .collect()
+        .collect();
+    for (pi, pair) in ends.windows(2).enumerate() {
+        let ([_, Some((last, ends_page))], [Some((first, starts_page)), _]) = (pair[0], pair[1]) else { continue };
+        let (before, after) = out.split_at_mut(pi + 1);
+        let (Some(prev_page), Some(page)) = (before.last(), after.first_mut()) else { continue };
+        let Some(prev) = prev_page.tables.get(last) else { continue };
+        let number = prev.caption.and_then(|c| prev_page.captions.get(c)).map(|c| c.number.as_str());
+        let open = tables::Open { page: pi, table: prev, number, ends_page };
+        let found = page.tables.get(first).and_then(|t| tables::continues(&open, pi + 1, t, &page.captions, starts_page));
+        if let (Some(repeats), Some(t)) = (found, page.tables.get_mut(first)) {
+            t.continues = Some((pi, last));
+            t.repeats_header = repeats;
+            if repeats {
+                t.header_rows = prev.header_rows;
+            }
+        }
+    }
+    out
 }
 
 /// A running header or footer lies within this fraction of the page's height from its top or

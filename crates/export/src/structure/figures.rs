@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use crate::Page;
+use crate::{Page, Table};
 
 /// What a caption names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -158,14 +158,13 @@ struct Cluster {
 
 /// The figures of a page with these `captions`: each figure caption takes the group of drawings,
 /// images and labels closest to it, above or below it within [`CAPTION_GAP`] and overlapping it
-/// across, nearest first. Paths that reach into a table, backgrounds and frames are not part of
-/// any.
-pub(super) fn figures(page: &Page, captions: &[Caption], running: &[bool]) -> Vec<Figure> {
+/// across, nearest first. Paths that reach into one of the page's `tables`, backgrounds and
+/// frames are not part of any, nor are the blocks running or `consumed` by a table.
+pub(super) fn figures(page: &Page, captions: &[Caption], running: &[bool], tables: &[Table], consumed: &[bool]) -> Vec<Figure> {
     if !captions.iter().any(|c| c.kind == CaptionKind::Figure) {
         return Vec::new();
     }
     let mut budget = MAX_FIGURE_WORK;
-    let (tables, consumed) = crate::tables(&page.blocks, &page.rules);
     // Paths that reach into a table are its grid, not a figure.
     let table_rects: Vec<[f64; 4]> = tables.iter().map(|t| t.rect).collect();
     let Some(mut clusters) = clusters(page, &table_rects, &mut budget) else { return Vec::new() };
@@ -178,7 +177,7 @@ pub(super) fn figures(page: &Page, captions: &[Caption], running: &[bool]) -> Ve
                 b.rotation.abs() <= 0.1
                     && (1..=MAX_LABEL_CHARS).contains(&chars)
                     && !flag(running, bi)
-                    && !flag(&consumed, bi)
+                    && !flag(consumed, bi)
                     && !caption_blocks.contains(&bi)
             })
         })
@@ -202,34 +201,10 @@ pub(super) fn figures(page: &Page, captions: &[Caption], running: &[bool]) -> Ve
         }
     }
 
-    // Every caption-to-drawing pairing in reach, nearest first (above before below), taken while
-    // both are free.
-    let mut pairs: Vec<(f64, bool, usize, usize)> = Vec::new();
-    for (ci, cap) in captions.iter().enumerate().filter(|(_, c)| c.kind == CaptionKind::Figure) {
-        let Some(b) = page.blocks.get(cap.block).filter(|b| b.rotation.abs() <= 0.1) else { continue };
-        let reach = (b.size * CAPTION_GAP.0).clamp(CAPTION_GAP.1, CAPTION_GAP.2);
-        for (k, c) in clusters.iter().enumerate() {
-            let Some(spent) = budget.checked_sub(1) else { return Vec::new() };
-            budget = spent;
-            if c.rect[2].min(b.rect[2]) <= c.rect[0].max(b.rect[0]) {
-                continue;
-            }
-            let (above, below) = (c.rect[1] - b.rect[3], b.rect[1] - c.rect[3]);
-            if (-2.0..=reach).contains(&above) {
-                pairs.push((above.max(0.0), false, ci, k));
-            } else if (-2.0..=reach).contains(&below) {
-                pairs.push((below.max(0.0), true, ci, k));
-            }
-        }
-    }
-    pairs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    let mut caption_done = vec![false; captions.len()];
-    let mut cluster_done = vec![false; clusters.len()];
+    let boxes: Vec<[f64; 4]> = clusters.iter().map(|c| c.rect).collect();
+    let Some(pairs) = pair_captions(page, captions, |_, c| c.kind == CaptionKind::Figure, &boxes, true, &mut budget) else { return Vec::new() };
     let mut out = Vec::new();
-    for (_, _, ci, k) in pairs {
-        if flag(&caption_done, ci) || flag(&cluster_done, k) {
-            continue;
-        }
+    for (ci, k) in pairs {
         let Some(c) = clusters.get_mut(k) else { continue };
         let (mut drawings, mut images) = (Vec::new(), Vec::new());
         c.parts.sort_unstable();
@@ -241,14 +216,57 @@ pub(super) fn figures(page: &Page, captions: &[Caption], running: &[bool]) -> Ve
         }
         c.labels.sort_unstable();
         out.push(Figure { caption: ci, rect: c.rect, drawings, images, labels: std::mem::take(&mut c.labels) });
-        for (v, i) in [(&mut caption_done, ci), (&mut cluster_done, k)] {
+    }
+    out
+}
+
+/// Pairs the page's `captions` that are `wanted` with `boxes`: every caption in reach of a box (above or
+/// below it within [`CAPTION_GAP`], overlapping it across) takes the nearest free one, and on a tie
+/// the box above it when `above_first` (a figure over its caption), below it otherwise (a table
+/// under its caption). Each pair is (caption, box), in caption order; `None` when that takes more
+/// than `budget` comparisons.
+pub(super) fn pair_captions(
+    page: &Page,
+    captions: &[Caption],
+    wanted: impl Fn(usize, &Caption) -> bool,
+    boxes: &[[f64; 4]],
+    above_first: bool,
+    budget: &mut usize,
+) -> Option<Vec<(usize, usize)>> {
+    let mut pairs: Vec<(f64, bool, usize, usize)> = Vec::new();
+    for (ci, cap) in captions.iter().enumerate().filter(|(ci, c)| wanted(*ci, c)) {
+        let Some(b) = page.blocks.get(cap.block).filter(|b| b.rotation.abs() <= 0.1) else { continue };
+        let reach = (b.size * CAPTION_GAP.0).clamp(CAPTION_GAP.1, CAPTION_GAP.2);
+        for (k, r) in boxes.iter().enumerate() {
+            *budget = budget.checked_sub(1)?;
+            if r[2].min(b.rect[2]) <= r[0].max(b.rect[0]) {
+                continue;
+            }
+            let (above, below) = (r[1] - b.rect[3], b.rect[1] - r[3]);
+            if (-2.0..=reach).contains(&above) {
+                pairs.push((above.max(0.0), !above_first, ci, k));
+            } else if (-2.0..=reach).contains(&below) {
+                pairs.push((below.max(0.0), above_first, ci, k));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let (mut caption_done, mut box_done) = (vec![false; captions.len()], vec![false; boxes.len()]);
+    let mut out = Vec::new();
+    for (_, _, ci, k) in pairs {
+        let (Some(c), Some(b)) = (caption_done.get(ci), box_done.get(k)) else { continue };
+        if *c || *b {
+            continue;
+        }
+        for (v, i) in [(&mut caption_done, ci), (&mut box_done, k)] {
             if let Some(d) = v.get_mut(i) {
                 *d = true;
             }
         }
+        out.push((ci, k));
     }
-    out.sort_by_key(|f| f.caption);
-    out
+    out.sort_unstable();
+    Some(out)
 }
 
 /// The page's paths and pictures, but for backgrounds, frames and what reaches into `tables`, in

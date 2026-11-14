@@ -273,3 +273,144 @@ fn a_page_of_scattered_paths_gives_up_on_figures_within_its_budget() {
     let pages = [Page { drawings, ..page(vec![at("Figure 9. Dots", [100.0, 780.0, 300.0, 790.0])]) }];
     assert!(structure(&pages)[0].figures.is_empty());
 }
+
+/// The blocks of a table whose rows start at `top`, one row every 14 points, its columns at
+/// x = 100, 200, 300 and 400; an empty text leaves its cell empty, and the first `bold` rows are
+/// bold.
+fn grid(rows: &[&[&str]], top: f64, bold: usize) -> Vec<Block> {
+    let mut out = Vec::new();
+    for (r, row) in rows.iter().enumerate() {
+        let y = top - 14.0 * r as f64;
+        for (c, text) in row.iter().enumerate().filter(|(_, t)| !t.is_empty()) {
+            let x = 100.0 + 100.0 * c as f64;
+            out.push(Block { bold: r < bold, ..at(text, [x, y - 10.0, x + 60.0, y]) });
+        }
+    }
+    out
+}
+
+/// The grid of ruled lines around the cells of [`grid`]'s `rows` rows of `cols` columns.
+fn grid_rules(rows: usize, cols: usize, top: f64) -> Vec<[f64; 4]> {
+    let bottom = top - 14.0 * rows as f64;
+    let right = 100.0 + 100.0 * cols as f64;
+    let mut out: Vec<[f64; 4]> = (0..=rows).map(|r| top + 2.0 - 14.0 * r as f64).map(|y| [96.0, y, right, y]).collect();
+    out.extend((0..=cols).map(|c| 96.0 + 100.0 * c as f64).map(|x| [x, bottom + 2.0, x, top + 2.0]));
+    out
+}
+
+fn tables_of(pages: &[Page]) -> Vec<Vec<TableStructure>> {
+    structure(pages).into_iter().map(|s| s.tables).collect()
+}
+
+#[test]
+fn a_table_header_is_its_bold_rows_or_a_group_over_sub_columns() {
+    let bold = grid(&[&["Pin", "Name", "Function"], &["1", "VCC", "Supply"], &["2", "GND", "Ground"]], 700.0, 1);
+    let t = &tables_of(&[page(bold)])[0];
+    assert_eq!(t.iter().map(|t| (t.table.rows.len(), t.header_rows)).collect::<Vec<_>>(), [(3, 1)]);
+
+    let mut grouped =
+        grid(&[&["Parameter", "", "", "Unit"], &["", "Min", "Max", ""], &["Voltage", "1.8", "3.6", "V"], &["Current", "", "10", "mA"]], 700.0, 0);
+    grouped.push(at("Limits", [200.0, 690.0, 380.0, 700.0]));
+    let t = &tables_of(&[page(grouped)])[0];
+    assert_eq!(t.len(), 1);
+    assert_eq!(t[0].table.rows[0].iter().map(|c| (c.text.as_str(), c.span)).collect::<Vec<_>>(), [("Parameter", 1), ("Limits", 2), ("Unit", 1)]);
+    assert_eq!(t[0].header_rows, 2);
+    assert!(t[0].row_spans.iter().flatten().all(|&s| s == 1), "a missing minimum is not spanned: {:?}", t[0].row_spans);
+
+    let plain = grid(&[&["1", "VCC", "Supply"], &["2", "GND", "Ground"], &["3", "NC", "Not connected"]], 700.0, 0);
+    assert_eq!(tables_of(&[page(plain)])[0][0].header_rows, 0);
+}
+
+#[test]
+fn empty_cells_under_a_parameter_are_spanned_by_it_unless_rules_part_them() {
+    let rows: &[&[&str]] = &[
+        &["Parameter", "Symbol", "Conditions", "Max"],
+        &["Supply current", "ICC", "Active", "10"],
+        &["", "", "Standby", "1"],
+        &["", "", "Sleep", "0.1"],
+        &["Leakage", "IL", "", "1"],
+    ];
+    let t = &tables_of(&[page(grid(rows, 700.0, 1))])[0][0];
+    assert_eq!(t.row_spans, [vec![1, 1, 1, 1], vec![3, 3, 1, 1], vec![0, 0, 1, 1], vec![0, 0, 1, 1], vec![1, 1, 1, 1]]);
+
+    let ruled = Page { rules: grid_rules(5, 4, 700.0), ..page(grid(rows, 700.0, 1)) };
+    let t = &tables_of(&[ruled])[0];
+    assert!(t[0].table.ruled.is_some());
+    assert!(t[0].row_spans.iter().flatten().all(|&s| s == 1), "{:?}", t[0].row_spans);
+}
+
+#[test]
+fn a_table_has_its_caption_and_the_notes_under_it() {
+    let rows: &[&[&str]] = &[&["Pin", "Name", "Function"], &["1", "VCC", "Supply (1)"], &["2", "EN", "Enable (2)"]];
+    for caption_x in [150.0, 100.0] {
+        let mut blocks = vec![at("Table 2. Pin functions", [caption_x, 706.0, caption_x + 200.0, 716.0])];
+        blocks.extend(grid(rows, 700.0, 1));
+        let first_note = blocks.len();
+        blocks.push(at("Note 1: Decouple with 100 nF.", [100.0, 648.0, 300.0, 658.0]));
+        blocks.push(at("(2) Internal pull-up.", [100.0, 636.0, 300.0, 646.0]));
+        blocks.push(at("The device starts when EN is high, which an internal pull-up keeps it by default.", [100.0, 600.0, 540.0, 630.0]));
+        blocks.push(at("Table 3. Too far", [100.0, 400.0, 300.0, 410.0]));
+        let s = &structure(&[page(blocks)])[0];
+        assert_eq!(s.tables.len(), 1, "caption at x = {caption_x}");
+        let t = &s.tables[0];
+        assert_eq!((t.caption, t.table.rows.len(), t.header_rows), (Some(0), 3, 1), "caption at x = {caption_x}: {:?}", t.table.rows);
+        assert_eq!(t.notes, [first_note, first_note + 1]);
+        assert!(t.table.rect[3] <= 706.0, "the box ends under the caption");
+    }
+}
+
+#[test]
+fn a_table_continues_the_table_that_ends_the_page_before() {
+    let head: &[&str] = &["Pin", "Name", "Function"];
+    let first = || page(grid(&[head, &["1", "VCC", "Supply"], &["2", "GND", "Ground"]], 200.0, 1));
+    let continues =
+        |second: Page| tables_of(&[first(), second])[1].iter().map(|t| (t.continues, t.repeats_header, t.header_rows)).collect::<Vec<_>>();
+
+    let repeated = page(grid(&[head, &["3", "EN", "Enable"], &["4", "NC", "Not connected"]], 700.0, 1));
+    assert_eq!(continues(repeated), [(Some((0, 0)), true, 1)], "its header repeats");
+
+    let bare = || grid(&[&["3", "EN", "Enable"], &["4", "NC", "Not connected"], &["5", "OUT", "Output"]], 700.0, 0);
+    assert_eq!(continues(page(bare())), [(Some((0, 0)), false, 0)], "nothing comes between them");
+
+    let mut after_text = bare();
+    after_text.push(at("A paragraph before the next table.", [110.0, 720.0, 400.0, 730.0]));
+    assert_eq!(continues(page(after_text)), [(None, false, 0)]);
+
+    let mut moved = bare();
+    for b in &mut moved {
+        b.rect[0] += 20.0;
+        b.rect[2] += 20.0;
+    }
+    assert_eq!(continues(page(moved)), [(None, false, 0)], "its columns do not line up");
+
+    let captioned = |label: &str| {
+        let mut blocks = vec![at("Text that ends the page.", [100.0, 60.0, 300.0, 70.0]), at(label, [150.0, 706.0, 350.0, 716.0])];
+        blocks.extend(bare());
+        blocks
+    };
+    let mut before = first();
+    before.blocks.insert(0, at("Table 4. Pins", [150.0, 206.0, 350.0, 216.0]));
+    let pages = |label: &str| [before.clone(), page(captioned(label))];
+    let t = &tables_of(&pages("Table 4. Pins (continued)"))[1];
+    assert_eq!(t.iter().map(|t| t.continues).collect::<Vec<_>>(), [Some((0, 0))], "its caption continues the one before");
+    let t = &tables_of(&pages("Table 5. Other pins"))[1];
+    assert_eq!(t.iter().map(|t| t.continues).collect::<Vec<_>>(), [None]);
+    let earlier = page(vec![at("Table 3. Timing", [150.0, 500.0, 350.0, 510.0])]);
+    let t = &tables_of(&[earlier, before.clone(), page(captioned("Table 3. Timing (continued)"))])[2];
+    assert_eq!(t.iter().map(|t| t.continues).collect::<Vec<_>>(), [None], "it continues another table than the one before");
+}
+
+#[test]
+fn a_page_of_many_tables_with_notes_stays_within_its_budget() {
+    let mut blocks = Vec::new();
+    for k in 0..400 {
+        let top = 790.0 - 60.0 * k as f64;
+        blocks.extend(grid(&[&["a", "b", "c"], &["1", "2", "3"], &["4", "5", "6"]], top, 1));
+        blocks.push(at("* A note.", [110.0, top - 52.0, 300.0, top - 42.0]));
+    }
+    let started = std::time::Instant::now();
+    let s = &structure(&[page(blocks)])[0];
+    assert_eq!(s.tables.len(), 400);
+    assert!(s.tables[0].notes.len() == 1 && s.tables[399].notes.is_empty(), "the first tables have their notes, the last ones none");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
