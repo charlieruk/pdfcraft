@@ -23,6 +23,7 @@ mod as_rtf;
 mod clip;
 mod flow;
 mod layout;
+mod structure;
 
 pub(crate) use as_docx::hex;
 #[cfg(test)]
@@ -43,6 +44,7 @@ pub use layout::{Block, Cell, Drawing, Image, Page, Table, TextRun};
 #[cfg(test)]
 use layout::{LOOKUP_STEPS, MAX_COLS, body_size};
 pub(crate) use layout::{Run, flowing_paragraphs, reading_order, tables};
+pub use structure::{PageStructure, Script, structure};
 
 #[cfg(test)]
 mod tests;

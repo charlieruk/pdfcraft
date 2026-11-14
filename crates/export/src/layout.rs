@@ -178,7 +178,7 @@ pub(crate) const MAX_COLS: usize = 63;
 
 /// Two blocks in a row this close (as a fraction of their font size) are one line of running
 /// text that changed font or colour, such as a link inside a sentence, not two table cells.
-const INLINE_GAP: f64 = 0.5;
+pub(crate) const INLINE_GAP: f64 = 0.5;
 
 /// How many blocks ending near a block's start are looked at to find the one it continues; a
 /// page laid out so that many end at the same place stays quick.
@@ -190,7 +190,7 @@ const CONTINUATION_PROBE: usize = 64;
 const OVERHANG: f64 = 0.3;
 
 /// [`OVERHANG`] in points for a block of `size`: at least a point (rounding), at most six.
-fn overhang(size: f64) -> f64 {
+pub(crate) fn overhang(size: f64) -> f64 {
     if size.is_finite() { (OVERHANG * size).clamp(1.0, 6.0) } else { 1.0 }
 }
 
