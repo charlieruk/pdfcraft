@@ -52,7 +52,28 @@ const MAX_NUMBER_CHARS: usize = 16;
 /// descriptions", not "Figure 3 shows". After the number comes nothing, punctuation, or a space
 /// and text that does not start in lowercase.
 pub(super) fn caption_label(text: &str) -> Option<(CaptionKind, &str)> {
-    let text = text.trim_start();
+    let (kind, number, after) = label_number(text.trim_start())?;
+    let ends_label = match after.chars().next() {
+        None => true,
+        Some(c) if c.is_whitespace() => !after.trim_start().starts_with(char::is_lowercase),
+        Some(c) => ".:|)\u{2013}\u{2014}-".contains(c),
+    };
+    ends_label.then_some((kind, number))
+}
+
+/// A mention of a figure or table that `text` starts with ("Figure 3", "table 2-1", "Fig. 4b"):
+/// its kind, its length in bytes and its number; the number may not run on into a word.
+pub(super) fn mention(text: &str) -> Option<(CaptionKind, usize, &str)> {
+    let (kind, number, after) = label_number(text)?;
+    if after.starts_with(char::is_alphanumeric) {
+        return None;
+    }
+    Some((kind, text.len() - after.len(), number))
+}
+
+/// The label `text` starts with (any case; a space after it, or after "Fig." none needed), the
+/// number after it, and the text after that.
+fn label_number(text: &str) -> Option<(CaptionKind, &str, &str)> {
     LABELS.iter().find_map(|&(label, kind)| {
         let head = text.get(..label.len())?;
         let rest = text.get(label.len()..)?;
@@ -61,13 +82,7 @@ pub(super) fn caption_label(text: &str) -> Option<(CaptionKind, &str)> {
             return None;
         }
         let end = number_len(after_label)?;
-        let (number, after) = (after_label.get(..end)?, after_label.get(end..)?);
-        let ends_label = match after.chars().next() {
-            None => true,
-            Some(c) if c.is_whitespace() => !after.trim_start().starts_with(char::is_lowercase),
-            Some(c) => ".:|)\u{2013}\u{2014}-".contains(c),
-        };
-        ends_label.then_some((kind, number))
+        Some((kind, after_label.get(..end)?, after_label.get(end..)?))
     })
 }
 

@@ -8,9 +8,11 @@ use crate::layout::{INLINE_GAP, overhang};
 use crate::{Page, TextRun};
 
 mod figures;
+mod sections;
 mod tables;
 
 pub use figures::{Caption, CaptionKind, Figure};
+pub use sections::{Heading, OutlineEntry, Reference};
 pub use tables::TableStructure;
 
 /// Where a run sits on its line.
@@ -38,9 +40,20 @@ pub struct PageStructure {
     pub figures: Vec<Figure>,
     /// The page's tables, as the other exports detect them, top to bottom.
     pub tables: Vec<TableStructure>,
+    /// The headings of the outline's bookmarks that go to this page, in outline order.
+    pub headings: Vec<Heading>,
+    /// The mentions of figures and tables in the page's text, in block and text order.
+    pub references: Vec<Reference>,
 }
 
-/// The structure of each page of `pages`, in order.
+/// The structure of each page of `pages`, in order, for a document without an outline: see
+/// [`structure_with_outline`].
+pub fn structure(pages: &[Page]) -> Vec<PageStructure> {
+    structure_with_outline(pages, &[])
+}
+
+/// The structure of each page of `pages`, in order, with the headings of the document's
+/// `outline`.
 ///
 /// A block is a running header or footer when it is upright, short and lies entirely within a
 /// tenth of the page's height from its top or bottom edge, and the same text is in that margin on
@@ -65,11 +78,17 @@ pub struct PageStructure {
 /// or its first rows repeat that table's header, or it has no caption and nothing but running
 /// headers and footers lies between the two.
 ///
+/// Each bookmark of the outline names the block on its page whose text is its title (letter
+/// case, spacing, a section number before either and the punctuation ending them aside); of
+/// several, the one nearest the height it goes to. A mention of a figure or table ("see Figure
+/// 3", "in table 2-1") anywhere in a block's text points to the first caption with its kind and
+/// number.
+///
 /// A run is a subscript or superscript when it is upright and short, and a run it follows or
 /// precedes on its line, at most four runs away in content order, sits on a baseline below or
 /// above its own and is set in a size at least a tenth larger (but not as much larger as a drop
 /// cap).
-pub fn structure(pages: &[Page]) -> Vec<PageStructure> {
+pub fn structure_with_outline(pages: &[Page], outline: &[OutlineEntry]) -> Vec<PageStructure> {
     let mut seen = HashSet::new();
     let mut ends = Vec::with_capacity(pages.len());
     let mut out: Vec<PageStructure> = running_blocks(pages)
@@ -81,7 +100,7 @@ pub fn structure(pages: &[Page]) -> Vec<PageStructure> {
             let figures = figures::figures(p, &captions, &running, &found, &consumed);
             let tables = tables::page_tables(p, found, &captions, &running, &consumed);
             ends.push(tables::page_ends(p, &tables, &running, &consumed));
-            PageStructure { scripts: scripts(&p.runs), running, captions, figures, tables }
+            PageStructure { scripts: scripts(&p.runs), running, captions, figures, tables, headings: Vec::new(), references: Vec::new() }
         })
         .collect();
     for (pi, pair) in ends.windows(2).enumerate() {
@@ -99,6 +118,12 @@ pub fn structure(pages: &[Page]) -> Vec<PageStructure> {
                 t.header_rows = prev.header_rows;
             }
         }
+    }
+    let headings = sections::headings(pages, &out, outline);
+    let references = sections::references(pages, &out);
+    for ((s, h), r) in out.iter_mut().zip(headings).zip(references) {
+        s.headings = h;
+        s.references = r;
     }
     out
 }

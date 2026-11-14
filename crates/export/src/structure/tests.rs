@@ -414,3 +414,66 @@ fn a_page_of_many_tables_with_notes_stays_within_its_budget() {
     assert!(s.tables[0].notes.len() == 1 && s.tables[399].notes.is_empty(), "the first tables have their notes, the last ones none");
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
 }
+
+fn entry(title: &str, level: usize, page: usize, top: Option<f64>) -> OutlineEntry {
+    OutlineEntry { title: title.into(), level, page, top }
+}
+
+#[test]
+fn each_bookmark_names_the_block_with_its_title_nearest_where_it_goes() {
+    let pages = [
+        page(vec![
+            block("Overview", 760.0, 770.0),
+            block("1 Introduction", 700.0, 710.0),
+            block("The introduction says what the device is for and who should read this.", 600.0, 640.0),
+            block("Overview", 500.0, 510.0),
+        ]),
+        page(vec![
+            block("Overview", 760.0, 770.0),
+            block("Scope", 700.0, 710.0),
+            block("A. 2 Scope", 400.0, 410.0),
+            block("Scope", 300.0, 310.0),
+            block("Scope", 200.0, 210.0),
+        ]),
+    ];
+    let outline = [
+        entry("INTRODUCTION:", 0, 0, None),
+        entry("Overview", 1, 0, Some(770.0)),
+        entry("Scope", 1, 1, None),
+        entry("1.1 Scope", 1, 1, Some(205.0)),
+        entry("Scope", 1, 1, Some(305.0)),
+        entry("Scope", 1, 1, Some(700.0)),
+        entry("Missing", 1, 1, None),
+        entry("Beyond the document", 0, 9, None),
+    ];
+    let s = structure_with_outline(&pages, &outline);
+    assert_eq!(s[0].running, [true, false, false, false], "the header repeats");
+    let heading = |entry, level, block| Heading { entry, level, block };
+    assert_eq!(s[0].headings, [heading(0, 0, Some(1)), heading(1, 1, Some(3))], "not the running header, though it is nearer");
+    assert_eq!(
+        s[1].headings,
+        [heading(2, 1, Some(1)), heading(3, 1, Some(4)), heading(4, 1, Some(3)), heading(5, 1, None), heading(6, 1, None)],
+        "the topmost without a height, the nearest with one; each block once"
+    );
+}
+
+#[test]
+fn mentions_of_figures_and_tables_point_to_their_first_caption() {
+    let pages = [
+        page(vec![
+            block("Figure 1. Block diagram", 600.0, 610.0),
+            block("See Figure 1 and table 2-1; Figures 3, figure 9b, Table 2-1xy and subtable 4.", 500.0, 520.0),
+        ]),
+        page(vec![block("Table 2-1 Pin descriptions (see Fig. 1)", 600.0, 610.0), block("Table 2-1 (continued)", 300.0, 310.0)]),
+    ];
+    let s = structure(&pages);
+    let found = |p: usize| {
+        s[p].references
+            .iter()
+            .map(|r| (r.block, &pages[p].blocks[r.block].text[r.range.clone()], r.kind, r.number.as_str(), r.target))
+            .collect::<Vec<_>>()
+    };
+    use CaptionKind::{Figure as F, Table as T};
+    assert_eq!(found(0), [(1, "Figure 1", F, "1", Some((0, 0))), (1, "table 2-1", T, "2-1", Some((1, 0))), (1, "figure 9b", F, "9b", None)]);
+    assert_eq!(found(1), [(0, "Fig. 1", F, "1", Some((0, 0)))], "a caption's own label is not a mention");
+}

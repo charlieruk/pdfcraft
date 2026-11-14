@@ -44,7 +44,9 @@ pub use layout::{Block, Cell, Drawing, Image, Page, Table, TextRun};
 #[cfg(test)]
 use layout::{LOOKUP_STEPS, MAX_COLS, body_size};
 pub(crate) use layout::{Run, flowing_paragraphs, reading_order, tables};
-pub use structure::{Caption, CaptionKind, Figure, PageStructure, Script, TableStructure, structure};
+pub use structure::{
+    Caption, CaptionKind, Figure, Heading, OutlineEntry, PageStructure, Reference, Script, TableStructure, structure, structure_with_outline,
+};
 
 #[cfg(test)]
 mod tests;

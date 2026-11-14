@@ -254,6 +254,37 @@ impl crate::Document {
         self.export_pages_with(true, MAX_EXPORT_IMAGE_BYTES, &mut pdfcraft_cos::ImageBudget::new(&editor.cos), true)
     }
 
+    /// The document's outline as an export reads it (#7196): every bookmark that goes to a page of
+    /// this document, how deep it is, and the height on the displayed page (y up) that its view
+    /// puts at the top of the window, when it says one (`XYZ`, `FitH`, `FitBH`, `FitR`) and the
+    /// page is not turned.
+    pub fn export_outline(&self) -> Vec<pdfcraft_export::OutlineEntry> {
+        let Some(cos) = self.editor.as_ref().map(|e| &e.cos) else { return Vec::new() };
+        pdfcraft_organize::bookmarks(cos)
+            .into_iter()
+            .filter_map(|b| {
+                let page = b.page?;
+                let info = self.info.pages.get(page)?;
+                let top = b
+                    .view
+                    .as_ref()
+                    .filter(|_| info.rotation == 0)
+                    .and_then(|(kind, numbers)| {
+                        let at = |i: usize| numbers.get(i).copied().flatten();
+                        match kind.as_slice() {
+                            b"XYZ" => Some((at(0), at(1)?)),
+                            b"FitH" | b"FitBH" => Some((None, at(0)?)),
+                            b"FitR" => Some((at(0), at(3)?)),
+                            _ => None,
+                        }
+                    })
+                    .map(|(x, y)| f64::from(info.height - info.user_to_view(x.unwrap_or(0.0) as f32, y as f32)[1]))
+                    .filter(|y| y.is_finite());
+                Some(pdfcraft_export::OutlineEntry { title: b.title, level: b.path.len().saturating_sub(1), page, top })
+            })
+            .collect()
+    }
+
     /// [`Self::export_pages_within`], and with `detail` the runs and drawings as well.
     fn export_pages_with(
         &self,
